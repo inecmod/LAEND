@@ -1,0 +1,16 @@
+oemof.solph==0.4.1
+demandlib==0.1.8
+oemof.thermal
+decorator==4.4.2
+chardet==4.0.0
+future==0.18.2
+openpyxl==3.0.7
+pynput==1.7.3
+pyomo==5.7.1
+pyreadline==2.1
+seaborn==0.11.1
+xlrd==1.2.0
+xlsxWriter==1.4.0
+xlwt==1.3.0
+xlwt-future==0.8.0
+yolk3k==0.9
