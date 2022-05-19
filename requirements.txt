@@ -1,6 +1,7 @@
 oemof.solph==0.4.1
 demandlib==0.1.8
 oemof.thermal
+olca-ipc==0.0.10
 decorator==4.4.2
 chardet==4.0.0
 future==0.18.2
