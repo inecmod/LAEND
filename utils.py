@@ -1673,8 +1673,7 @@ def createOemofNodes(year, nd=None, buses=None):
                         label=x["label"],
                         outputs={
                             busd[x["to"]]: solph.Flow(
-                                variable_costs=x["variable costs"],
-                                variable_env=x["var_env1_LCA"],
+                                variable_costs=x["variable costs"] + x["var_env1_LCA"],
                                 emission_factor=x["var_env1_EmissionFactor"]
                             )
                         },
