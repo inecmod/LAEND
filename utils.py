@@ -2072,13 +2072,16 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                     if x == 'storages':
                         flow = [x for x in used_tech['storages'] if x[0].label == row['label']]
                    
-                        if row['nominal capacity'] == 0:
-                            row["initial capacity"] = \
-                            esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[
-                                -1]  # / row["nominal capacity"]
-                        else:
-                            row["initial capacity"] = \
-                                esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
+                        # if row['nominal capacity'] == 0:
+                        #     row["initial capacity"] = \
+                        #     esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[
+                        #         -1]  # / row["nominal capacity"]
+                        # else:
+                            # row["initial capacity"] = \
+                            #     esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
+                            #         "nominal capacity"]
+                        if row["nominal capacity"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
+                            row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
                                     "nominal capacity"]
                     
                 old = old.drop_duplicates()
@@ -2168,12 +2171,15 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                 row['capacity inflow'] = esys.results['main'][flow_ipts]['sequences'].max()['flow']
                 row['capacity outflow'] = esys.results['main'][flow_opts]['sequences'].max()['flow']
 
-                if row['nominal capacity'] == 0:
-                    row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] 
+                # if row['nominal capacity'] == 0:
+                #     row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] 
 
-                else:
-                    row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / \
-                                              row["nominal capacity"] 
+                # else:
+                #     row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / \
+                #                               row["nominal capacity"] 
+                if row["nominal capacity"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
+                    row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
+                            "nominal capacity"]
 
                 df2 = df2.append(row)
 
