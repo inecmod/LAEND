@@ -1937,17 +1937,17 @@ def createOemofNodes(year, nd=None, buses=None):
                         label=x["label"],
                         inputs={
                             busd[x["bus"]]: solph.Flow(
-                                nominal_value=x["nominal capacity"] * x['invest_relation_input_capacity'],
+                                nominal_value=x["invest decision"] * x['invest_relation_input_capacity'],
                                                        variable_costs=x["variable input costs"],
                                                        )
                                 },
                         outputs={
                             busd[x["bus"]]: solph.Flow(
-                                nominal_value=x["nominal capacity"] * x['invest_relation_output_capacity'], 
+                                nominal_value=x["invest decision"] * x['invest_relation_output_capacity'], 
                                                        variable_costs=x["variable output costs"], 
                                                        )
                                 },
-                        nominal_storage_capacity=x["nominal capacity"],
+                        nominal_storage_capacity=x["invest decision"],
                         balanced=bool(x['balanced']),
                         loss_rate=x["capacity loss"],
                         initial_storage_level=x["initial capacity"],
@@ -2072,17 +2072,10 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                     if x == 'storages':
                         flow = [x for x in used_tech['storages'] if x[0].label == row['label']]
                    
-                        # if row['nominal capacity'] == 0:
-                        #     row["initial capacity"] = \
-                        #     esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[
-                        #         -1]  # / row["nominal capacity"]
-                        # else:
-                            # row["initial capacity"] = \
-                            #     esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
-                            #         "nominal capacity"]
-                        if row["nominal capacity"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
+                        
+                        if row["invest decision"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
                             row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
-                                    "nominal capacity"]
+                                    "invest decision"]
                     
                 old = old.drop_duplicates()
 
@@ -2166,20 +2159,18 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                 flow_ipts = (list(flow[0][0].inputs.items())[0][1].input, list(flow[0][0].inputs.items())[0][1].output)
                 flow_opts = (list(flow[0][0].outputs.data.items())[0][1].input, list(flow[0][0].outputs.data.items())[0][1].output)
 
-                row["nominal capacity"] = esys.results['main'][flow[0]]['sequences'].max()['storage_content']
-                logging.debug(esys.results['main'][flow[0]]['sequences'].max()['storage_content'])
+                try:
+                    row["invest decision"] = esys.results['main'][flow[0]]['scalars']['invest']
+                    logging.debug(esys.results['main'][flow[0]]['scalars']['invest'])
+                except KeyError:
+                    x = 'Do nothing'
+                    
                 row['capacity inflow'] = esys.results['main'][flow_ipts]['sequences'].max()['flow']
                 row['capacity outflow'] = esys.results['main'][flow_opts]['sequences'].max()['flow']
-
-                # if row['nominal capacity'] == 0:
-                #     row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] 
-
-                # else:
-                #     row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / \
-                #                               row["nominal capacity"] 
-                if row["nominal capacity"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
+                
+                if row["invest decision"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
                     row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
-                            "nominal capacity"]
+                            "invest decision"]
 
                 df2 = df2.append(row)
 
@@ -2487,6 +2478,18 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
 
         elif ky == 'invest':
             res['invest'] = res.index.copy()
+            
+            tech_cat = {}
+            
+            for cat in config.ci:
+                for label in list(tech[cat]['label']):
+                    tech_cat[label] = cat
+            
+            for item in list(res.index):
+                
+                c = tech_cat[item[:-5]]
+                index = tech[c].index[(tech[c]['label'] == item[:-5])].tolist()
+                res.loc[item, 'eol'] = int(tech[c].loc[index, 'lifetime']) + int(item[-4:])
 
         res['technology'] = None
         for item in list(res.index):
@@ -2501,6 +2504,32 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
         
         res['objective value'] = tech_result_year['objective'] * step_for_aux_years
         result_overview = result_overview.append(res)
+    
+    # Environmental impacts and costs are added for investments from previous years.      
+    result_overview = result_overview.reset_index(drop=True)
+    names = result_overview['name'].tolist() 
+    names = [x for x in names if not "/" in x] #no flows
+    names = list(set(names)) #remove duplicates
+    
+    for name in names:
+        
+        index = result_overview.index[(result_overview['name'] == name)].tolist()
+        for i in index:
+            y = result_overview.loc[i, 'year'] 
+            int_year = int(y)
+            if year == int_year: #the investment year
+                continue
+                        
+            if int_year == int(name[-4:]):
+            
+                row = result_overview.iloc[i].copy()
+                period_end = year + step_for_aux_years - 1
+            
+                if int(name[-4:]) + step_for_aux_years - 1 < period_end and year < int(row['eol']):
+                    row['year'] = year
+                    row['period end'] = year + step_for_aux_years - 1
+                    row = row.to_frame().T
+                    result_overview = pd.concat([result_overview, row])
     
     result_total_objective['impact'] = result_overview
     
