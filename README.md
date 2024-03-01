@@ -1,4 +1,4 @@
-# LAEND_v031
+# LAEND
 1. About LAEND
 
 LAEND stands for "Life Cycle Assessment based ENergy Decision", which is based on the open source toolbox oemof and the life cycle assessment software openLCA and enables a coupled energy system analysis with environmentally oriented sustainability assessment and optimization. The tool is developed in Python and uses different Python libraries besides the mentioned tools. LAEND is based on oemof 0.4.1. Parts of this version of LAEND were created by Dorothee Birnkammer during her Master Thesis.
@@ -11,13 +11,13 @@ Helpful resources
 - Oemof documentation at https://oemof-solph.readthedocs.io/en/v0.4.1/index.html
 - Oemof github at https://github.com/oemof 
 
-2. Installing LAEND v0.3.1
+2. Installing LAEND
 	1. Install Python 3.7 or 3.8 (this might be done by installing Anaconda, see https://en.wikipedia.org/wiki/Anaconda_(Python_distribution))
 	2. Create your virtual environment (e.g. 
 https://docs.anaconda.com/anaconda/navigator/tutorials/manage-environments/)
 	3. Install oemof 0.4.1 (https://oemof-solph.readthedocs.io/en/v0.4.1/index.html; https://www.youtube.com/watch?v=eFvoM36_szM)
 	4. Install a solver (LAEND assumes you use the CBC solver, though this can be changed in the config file)
-	5. Fetch LAEND from GitHub (https://github.com/inecmod/laendv031)
+	5. Fetch LAEND from GitHub (https://github.com/inecmod/laend)
 	6. Install the python packages as listed in requirements.txt
 This version comes with a reduced number of usable energy technologies in order to be used without an ecoinvent licence for LCA data. Therefore, all required LCA data is available in the folder ~\LCA.
 You should now be ready to run LAEND. 
