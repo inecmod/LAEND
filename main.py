@@ -9,7 +9,8 @@ import multiprocessing as mp
 
 # import python files
 import laend_module
-import config as config
+import config
+
 
 
 if __name__ == "__main__":
@@ -29,7 +30,10 @@ if __name__ == "__main__":
     
         # start running objective-specific calculations in parallel
         for i in config.objective:
-                pool.apply_async(laend_module.optimizeForObjective, args=(i, tech, factors, emission_limits, run_name, time))
+                pool.apply_async(
+                    laend_module.optimizeForObjective, args=(
+                        i, tech, factors, emission_limits, run_name, time
+                        ))
     
     
         pool.close()
@@ -37,9 +41,11 @@ if __name__ == "__main__":
     
     else: 
         for i in config.objective:
-            laend_module.optimizeForObjective(i, tech, factors, emission_limits, run_name, time)
+            laend_module.optimizeForObjective(
+                i, tech, factors, emission_limits, run_name, time
+                )
    
-    # run the final result aggregation. Only works if all optimization problems led to a solution
+    # run the final result aggregation
     final = laend_module.combineResults(run_name, time)
 
     logging.info('calc time: ' + str(datetime.now() - calc_start))

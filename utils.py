@@ -7,6 +7,7 @@ from datetime import datetime
 import calendar
 from matplotlib import pyplot as plt
 import os
+import sys
 
 # import oemof
 import oemof.solph as solph
@@ -16,15 +17,17 @@ from oemof.tools import economics
 import olca
 
 # import special oemof libraries for demand and supply data
-# import feedinlib.models as models
-# import feedinlib.weather as weather
-# import feedinlib.powerplants as plants
+from windpowerlib import ModelChain, WindTurbine, create_power_curve
 from oemof.thermal import solar_thermal_collector
 import oemof.thermal.compression_heatpumps_and_chillers as cmpr_hp_chiller
 import demandlib.bdew as bdew
+import demandlib.particular_profiles as profiles
 
 # import files
 import config
+
+import warnings
+warnings.simplefilter("ignore")
 
 ################################
 #----Functions used in main()
@@ -32,7 +35,8 @@ import config
 
 def defineYearsForCalculation():
     '''
-    Creates an array of years used in the calculation. Based on config.aux_years (t/f) and config.aux_year_steps
+    Creates an array of years used in the calculation. 
+    Based on config.aux_years (t/f) and config.aux_year_steps
     Used in writeParametersLogger
     :return: calc_years e.g. [2020,2025]
     '''
@@ -73,7 +77,8 @@ def writeParametersLogger():
     logging.info(f'Years selected for calculation: {defineYearsForCalculation()}')
     info['Years for calculation'] = defineYearsForCalculation()
     info[
-        'Investment time steps (annual result will be multiplied with this number if aux years are used!) '] = config.InvestTimeSteps
+        'Investment time steps (annual result will be multiplied with this number \
+        if aux years are used!) '] = config.InvestTimeSteps
     info['Emission Constraint'] = config.emission_constraint
     logging.info('Using emission constraints: ' + str(config.emission_constraint))
 
@@ -85,7 +90,8 @@ def writeParametersLogger():
 
 def compileTMY(file_name):
     '''
-    Takes pvgis tmy file and prepares it for later use; change of timeindex to 2016 and insertion of leap day
+    Takes pvgis tmy file and prepares it for later use; 
+    change of timeindex to 2016 and insertion of leap day
     :param file_name: csv file of tmy data from pvgis
     :return: tmy file for 2016 with leap day, series of month and year that was chosen for tmy
     '''
@@ -105,7 +111,8 @@ def compileTMY(file_name):
     #### create leap day
 
     # set index do non leap year
-    df.index = pd.date_range(start=datetime(2015, 1, 1, 00, 00), end=datetime(2015, 12, 31, 23, 00), freq='H')
+    df.index = pd.date_range(
+        start=datetime(2015, 1, 1, 00, 00), end=datetime(2015, 12, 31, 23, 00), freq='H')
 
     # change the year to leap year = data without february 29
     df.index = df.index.map(lambda t: t.replace(year=2016))
@@ -113,7 +120,8 @@ def compileTMY(file_name):
     # get data from Feb 23 to March 5 and turn it into an average day
     average_day = df.loc['2016-02-23': '2016-03-05']
     average_day = average_day.groupby(by=average_day.index.hour).mean()
-    average_day.index = pd.date_range(start=datetime(2016, 2, 29, 00, 00), end=datetime(2016, 2, 29, 23, 00), freq='H')
+    average_day.index = pd.date_range(start=datetime(2016, 2, 29, 00, 00), \
+                                      end=datetime(2016, 2, 29, 23, 00), freq='H')
 
     # add the average day
     tmy = pd.concat([df, average_day], sort=True).sort_index()
@@ -121,7 +129,88 @@ def compileTMY(file_name):
     return tmy, tmy_month_year
 
 
+def getElectricityDemand(ann_el_demand_per_sector, run_name, time):
+    """
+    Creating power demand profiles using bdew profiles.
 
+    Installation requirements
+    -------------------------
+    This example requires at least version v0.1.4 of the oemof demandlib. Install
+    by:
+        pip install 'demandlib>=0.1.4,<0.2'
+    Optional:
+        pip install matplotlib
+
+    SPDX-FileCopyrightText: Birgit Schachler
+    SPDX-FileCopyrightText: Uwe Krien <krien@uni-bremen.de>
+    SPDX-FileCopyrightText: Stephen Bosch
+
+    SPDX-License-Identifier: MIT
+
+    """
+    # The following dictionary is create by "workalendar"
+    # pip3 install workalendar
+    # >>> from workalendar.europe import Germany
+    # >>> cal = Germany()
+    # >>> holidays = dict(cal.holidays(2010))
+
+    holidays = {
+        datetime(2016, 5, 16): 'Whit Monday',
+        datetime(2016, 3, 28): 'Easter Monday',
+        datetime(2016, 5, 5): 'Ascension Thursday',
+        datetime(2016, 1, 1): 'New year',
+        datetime(2016, 10, 3): 'Day of German Unity',
+        datetime(2016, 12, 25): 'Christmas Day',
+        datetime(2016, 5, 1): 'Labour Day',
+        datetime(2016, 3, 25): 'Good Friday',
+        datetime(2016, 12, 26): 'Second Christmas Day'
+    }
+    # create dataframe for 2016
+    demand = pd.DataFrame(
+        index=pd.date_range(datetime(2016, 1, 1, 0),
+                            periods=8784, freq='H'))
+
+    year = 2016
+
+    # read standard load profiles
+    e_slp = bdew.ElecSlp(year, holidays=holidays)
+
+    # multiply given annual demand with timeseries
+    elec_demand = e_slp.get_profile(ann_el_demand_per_sector)
+
+    # Add the slp for the industrial group
+    # ilp = profiles.IndustrialLoadProfile(e_slp.date_time_index, holidays=holidays)
+
+    # Beginning and end of workday, weekdays and weekend days, and scaling
+    # factors by default
+    # elec_demand["i0"] = ilp.simple_profile(ann_el_demand_per_sector["i0"])
+
+    # # Set beginning of workday to 9 am
+    # elec_demand["i1"] = ilp.simple_profile(
+    #     ann_el_demand_per_sector["i1"], am=settime(9, 0, 0)
+    # )
+
+    # # Change scaling factors
+    # elec_demand["i2"] = ilp.simple_profile(
+    #     ann_el_demand_per_sector["i2"],
+    #     profile_factors={
+    #         "week": {"day": 1.0, "night": 0.8},
+    #         "weekend": {"day": 0.8, "night": 0.6},
+    #     },
+    # )
+
+   
+    # Resample 15-minute values to hourly values.
+    elec_demand_resampled = elec_demand.resample("H").mean()
+    demand = elec_demand_resampled
+
+    demand.to_csv(f'in/{config.location_name}/{config.varname_el_demand}')
+    
+    importFixedFlow(
+        run_name, time, f'in/{config.location_name}/{config.varname_el_demand}', 
+        'demand', config.varname_el_demand, sum_mult_profiles=True
+        )
+    
 def getHeatDemand(testmode=False, ann_demands_per_type=None, temperature=None):
     '''
     Used bdew demandlib to create heat demand curve
@@ -134,9 +223,9 @@ def getHeatDemand(testmode=False, ann_demands_per_type=None, temperature=None):
     '''
 
     if ann_demands_per_type is None:
-        ann_demands_per_type = {'efh': 25000,
-                                'mfh': 80000,
-                                'ghd': 140000}
+        ann_demands_per_type = {'efh': 1/3,
+                                'mfh': 1/3,
+                                'ghd': 1/3}
     holidays = {
         datetime(2016, 5, 16): 'Whit Monday',
         datetime(2016, 3, 28): 'Easter Monday',
@@ -206,27 +295,27 @@ def getHeatDemand(testmode=False, ann_demands_per_type=None, temperature=None):
     else:
         demand['total'] = demand['efh'] + demand['mfh'] + demand['ghd']
                     
-    demand.to_csv(config.filename_th_demand)
+    demand.to_csv(f'in/{config.location_name}/{config.filename_th_demand}')
     return demand
 
 
-def importFixedFlow(run_name, file_name, sheet_of_item, item_name, sum_mult_profiles=False, col_name=None,
-                    conversion=None):
+def importFixedFlow(run_name, time, file_name, sheet_of_item, item_name, 
+                    sum_mult_profiles=False, col_name=None, conversion=None):
     '''
-    Takes Excel table and saves fixed flow to copy of scenario.xlsx in files folder
+    Takes Excel table and saves fixed flow to copy of scenario file in files folder
     Imported data should have an hourly granularity and start on January 1 at 0:00!
     #ToDo Takes and saves as excel, not great performance. Speed can be improved here.
 
     :param file_name: File name of file where data for fixed flow is saved
-    :param sheet_of_item: Sheet name in 'scenario.xlsx' where item e.g. demand or pv in renewables is saved
-    :param item_name: Item name = label in scenario.xlsx excel table
-    :param sum_mult_profiles: should multiple profiles be summed into one fixed flow? Will sum all flows, does not correspond to column selection yet!
+    :param sheet_of_item: Sheet name in scenario file where item e.g. demand or pv in renewables is saved
+    :param item_name: Item name = label in scenario file 
+    :param sum_mult_profiles: multiple profiles are summed into one fixed flow. Will sum all flows!
     :param col_name: Single column to be used as fixed flow
     :param conversion: Should profile be converted e.g. 1/1000 for conversion W to kW
-    :return: saves to Excel
+    :return: saves as xlsx file
     '''
     logging.info(f'Importing {file_name}')
-    xls = pd.ExcelFile(f'{run_name}\\files\\{config.filename_configuration}')
+    xls = pd.ExcelFile(f'{run_name}\\files\\{time}_{config.filename_configuration}')
 
     data = {}
     for sheet in xls.sheet_names:
@@ -234,16 +323,19 @@ def importFixedFlow(run_name, file_name, sheet_of_item, item_name, sum_mult_prof
 
     if not item_name in data[sheet_of_item]['label'].tolist():
         raise ValueError(
-            f'Please ensure that the bus "{item_name}" is included in the file {config.filename_configuration}')
+            f'Please ensure that the bus "{item_name}" is included in the file \
+            {config.filename_configuration}')
 
     profiles = pd.read_csv(file_name)
 
     if len(data['timeseries']) > len(profiles):
-        raise ValueError('Length of imported profile is not long enough to account for 8784 hours in a leap year.')
+        raise ValueError(
+            'Length of imported profile is not long enough to account for 8784 hours in a leap year.')
 
     elif len(data['timeseries']) < len(profiles):
         logging.warning(
-            f'Length of imported profile is not equal to number of hours in leap year (8784) but {len(profiles)}. Import will cut off excessive rows at the end.')
+            f'Length of imported profile is not equal to number of hours in leap \
+            year (8784) but {len(profiles)}. Import will cut off excessive rows at the end.')
         profiles = profiles[:len(data['timeseries'])]
 
     # creates sum of one row to sum multiple profiles
@@ -264,7 +356,8 @@ def importFixedFlow(run_name, file_name, sheet_of_item, item_name, sum_mult_prof
     data[sheet_of_item].at[pos, 'fixed'] = 1
 
     # writes profile to excel table for later input
-    writer = pd.ExcelWriter(f'{run_name}\\files\\{config.filename_configuration}', engine='xlsxwriter')
+    writer = pd.ExcelWriter(
+        f'{run_name}\\files\\{time}_{config.filename_configuration}', engine='xlsxwriter')
 
     for key in data.keys():
         data[key].to_excel(writer, sheet_name=key, index=False)
@@ -274,23 +367,24 @@ def importFixedFlow(run_name, file_name, sheet_of_item, item_name, sum_mult_prof
     logging.info(f'Successfully imported {file_name} as fixed flow for {item_name}')
 
 
-def importFixedCOP(run_name, file_name, sheet_of_item, item_name, sum_mult_profiles=False, col_name=None,
+def importFixedCOP(run_name, time, file_name, sheet_of_item, item_name, 
+                   sum_mult_profiles=False, 
+                   col_name=None,
                    conversion=None):
     '''
-    Takes Excel table and saves fixed flow to scenario.xlsx
+    Takes Excel table and saves fixed flow to copy of scenario file
     Imported data should have an hourly granularity and start on January 1 at 0:00!
-    #ToDo Takes and saves as excel, not great performance. Speed can be improved here.
-
+    
     :param file_name: File name of file where data for fixed flow is saved
-    :param sheet_of_item: Sheet name in 'scenario.xlsx' where item e.g. demand or pv in renewables is saved
-    :param item_name: Item name = label in scenario.xlsx excel table
-    :param sum_mult_profiles: should multiple profiles be summed into one fixed flow? Will sum all flows, does not correspond to column selection yet!
+    :param sheet_of_item: Sheet name in scenario file where item e.g. demand or pv in renewables is saved
+    :param item_name: Item name = label in scenario file 
+    :param sum_mult_profiles: multiple profiles are summed into one fixed flow. Will sum all flows!
     :param col_name: Single column to be used as fixed flow
     :param conversion: Should profile be converted e.g. 1/1000 for conversion W to kW
     :return: saves to Excel
     '''
     logging.info(f'Importing {file_name}')
-    xls = pd.ExcelFile(f'{run_name}\\files\\{config.filename_configuration}')
+    xls = pd.ExcelFile(f'{run_name}\\files\\{time}_{config.filename_configuration}')
 
     data = {}
     for sheet in xls.sheet_names:
@@ -298,16 +392,19 @@ def importFixedCOP(run_name, file_name, sheet_of_item, item_name, sum_mult_profi
 
     if not item_name in data[sheet_of_item]['label'].tolist():
         raise ValueError(
-            f'Please ensure that the bus "{item_name}" is included in the file {config.filename_configuration}')
+            f'Please ensure that the bus "{item_name}" is included in the file \
+            {config.filename_configuration}')
 
     profiles = pd.read_csv(file_name)
 
     if len(data['timeseries']) > len(profiles):
-        raise ValueError('Length of imported profile is not long enough to account for 8784 hours in a leap year.')
+        raise ValueError('Length of imported profile is not long enough to account \
+                         for 8784 hours in a leap year.')
 
     elif len(data['timeseries']) < len(profiles):
         logging.warning(
-            f'Length of imported profile is not equal to number of hours in leap year (8784) but {len(profiles)}. Import will cut off excessive rows at the end.')
+            f'Length of imported profile is not equal to number of hours in leap \
+            year (8784) but {len(profiles)}. Import will cut off excessive rows at the end.')
         profiles = profiles[:len(data['timeseries'])]
 
     # creates sum of one row to sum multiple profiles
@@ -328,7 +425,8 @@ def importFixedCOP(run_name, file_name, sheet_of_item, item_name, sum_mult_profi
     data[sheet_of_item].at[pos, 'fixed_cop'] = 1
 
     # writes profile to excel table for later input
-    writer = pd.ExcelWriter(f'{run_name}\\files\\{config.filename_configuration}', engine='xlsxwriter')
+    writer = pd.ExcelWriter(
+        f'{run_name}\\files\\{time}_{config.filename_configuration}', engine='xlsxwriter')
 
     for key in data.keys():
         data[key].to_excel(writer, sheet_name=key, index=False)
@@ -338,7 +436,7 @@ def importFixedCOP(run_name, file_name, sheet_of_item, item_name, sum_mult_profi
     logging.info(f'Successfully imported {file_name} as fixed cop for {item_name}')
 
 
-def createPvProfileForTMY(file_name, tmy_month_year):
+def createPvProfileForTMY(file_name, tmy_month_year, name):
     logging.info('Creating pv profile based on typical meteorological year (tmy)')
 
     # get df from pvgis csv export (must include all years in tmy)
@@ -359,64 +457,158 @@ def createPvProfileForTMY(file_name, tmy_month_year):
 
         df = pd.concat([df, data], sort=True)
 
-    df.index = df.index.map(lambda t: t.replace(year=2016))
-
+    df.index = df.index.map(lambda t: t.replace(year=2016))  
+    
+    
     # get data from Feb 23 to March 5 and turn it into an average leap day
-    average_day = df.loc['2016-02-23': '2016-03-05']
-    average_day = average_day.apply(pd.to_numeric)
-
-    leap_day = average_day.groupby(by=average_day.index.hour).mean()
-    leap_day.index = pd.date_range(start=datetime(2016, 2, 29, 00, 00), end=datetime(2016, 2, 29, 23, 00), freq='H')
-    leap_day['time'] = leap_day.index
-
-    # add the average leap day to data
-    df = pd.concat([df, leap_day], sort=True).sort_index()
+    # to be included: check if leap day exists; if Feb in TMY is leap year 29.2. already exists
+    # and will be double;  
+  
+    if len(df) < 8784:
+    # if pd.timestamp('2016-02-29 00:00:00') in df_index == False:
+        
+        average_day = df.loc['2016-02-23': '2016-03-05']
+        average_day = average_day.apply(pd.to_numeric)
+    
+        leap_day = average_day.groupby(by=average_day.index.hour).mean()
+        leap_day.index = pd.date_range(
+            start=datetime(2016, 2, 29, 00, 00), end=datetime(2016, 2, 29, 23, 00), freq='H'
+            )
+        leap_day['time'] = leap_day.index
+    
+        # add the average leap day to data
+        df = pd.concat([df, leap_day], sort=True).sort_index()
 
     # export
-    df.to_csv('in/pvgis_tmy.csv')
+    df.to_csv(f'in/{config.location_name}/pvgis_tmy_{name}.csv')
 
     logging.info('pv profile adaption successful')
 
 
-# def createWindPowerPlantFixedFlow(item_name, my_weather, run_name):
-#     '''
-#     Windpowerplant settings in config file also inputs.
+def createWindPowerPlantFixedFlow(item_name, my_weather, run_name, time):
+    '''
+    Windpowerplant settings in config file also inputs.
 
-#     :param item_name: wind_plant_name
-#     :param my_weather: weather.FeedinWeather object
-#     :return: exports to excel, does not return anything
-#     '''
+    :param item_name: wind_plant_name
+    :param my_weather: tmy compiled with compileTMY()
+    :return: exports to excel, does not return anything
+    '''
 
-#     logging.info(f'Creating fixed flow for wind: {item_name}')
+    logging.info(f'Creating fixed flow for wind: {item_name}')
+    
+    timezone = 'Europe/Berlin'
+    wind_z0_roughness = config.wind_z0_roughness
 
-#     df = my_weather
-#     df = df.rename(columns={'WS10m': 'v_wind', 'SP': 'pressure', 'T2m': 'temp_air'})
-#     # ädf['pressure'] *= 10
-#     df['temp_air'] += 273.15
-#     df['z0'] = config.wind_z0_roughness
+    my_weather = my_weather.copy()
+    # convert tmy to required format
+    my_weather.index = pd.to_datetime(my_weather.index, utc=True)
+    my_weather.index = my_weather.index.tz_convert(
+            timezone)
+    my_weather = my_weather.rename(columns={'WS10m': 'v_wind', 'SP': 'pressure', 'T2m': 'temp_air'})
+    my_weather['temp_air'] += 273.15 # converts °C in K
+    my_weather['z0'] = wind_z0_roughness
 
-#     my_weather = weather.FeedinWeather(
-#         data=df,
-#         timezone=config.timezone,
-#         latitude=config.latitude,
-#         longitude=config.longitude,
-#         data_height=config.windHeightOfData
-#     )
+    # The columns of the DataFrame my_weather are a MultiIndex where the first level
+    # contains the variable name as string (e.g. 'wind_speed') and the
+    # second level contains the height as integer at which it applies
+    # (e.g. 10, if it was measured at a height of 10 m). The index is a
+    # DateTimeIndex.
+    
+    windHeightOfData = { # height in m over ground of mesurement of single parameter
+        # 'dhi': 0,
+        # 'dirhi': 0,
+        'pressure': 0, # height in which pressure was measured
+        'temp_air': 2, # height in which temperature was measured
+        'v_wind': 10, # height in which wind speed was measured
+        'Z0': 0} # height in which roughness was measured
+    
+    # insert second column name for height of data 
+    my_weather = my_weather[["v_wind", "temp_air", "z0", "pressure"]]
+    my_weather.columns = [
+        ["wind_speed", "temperature", "roughness_length", "pressure"],
+        [
+         windHeightOfData["v_wind"], 
+         windHeightOfData["temp_air"],
+         windHeightOfData["Z0"],
+         windHeightOfData["pressure"],
+        ],
+    ]
+    
+    
+    # Specification of wind turbine
+    # ************************************************************************
+    # **** Data is provided in the oedb turbine library **********************
+    
+    # windPowerPlant = config.windPowerPlant
+    # windPowerPlant = WindTurbine(**windPowerPlant)
+    
+    # ************************************************************************
+    # **** Specification of wind turbine with your own data ******************
+    # **** NOTE: power values and nominal power have to be in Watt
+    
+    windPowerPlant = {
+        "nominal_power": config.windPlantCapacity * 1000,  # in W
+        "hub_height": config.wind_hub_hight,  # in m
+        "power_curve": pd.DataFrame(
+            data={
+                "value": [
+                    p * 1000
+                    for p in config.p_in_power_curve
+                ],  # in W
+                "wind_speed": [0.0, 3.0, 5.0, 10.0, 15.0, 25.0],
+            }
+        ),  # in m/s
+    }
+    windPowerPlant = WindTurbine(**windPowerPlant)
+    
+    # Use of ModelChain
+    # ************************************************************************
+    # **** ModelChain with default parameter *********************************
+    mc_windPowerPlant = ModelChain(windPowerPlant).run_model(my_weather)
+    # write power output time series to WindTurbine object
+    windPowerPlant.power_output = mc_windPowerPlant.power_output
+    
+    # ************************************************************************
+    # **** ModelChain with non-default value for "wind_speed_model" **********
+    # mc_example_turbine = ModelChain(
+    #     windPowerPlant, wind_speed_model="hellman").run_model(my_weather)
+    # windPowerPlant.power_output = mc_example_turbine.power_output
+    
+    # ************************************************************************
+    # **** ModelChain with non-default specifications ************************
+    # modelchain_data = {
+    #     "wind_speed_model": "logarithmic",  # 'logarithmic' (default),
+    #     # 'hellman' or
+    #     # 'interpolation_extrapolation'
+    #     "density_model": "ideal_gas",  # 'barometric' (default), 'ideal_gas' or
+    #     # 'interpolation_extrapolation'
+    #     "temperature_model": "linear_gradient",  # 'linear_gradient' (def.) or
+    #     # 'interpolation_extrapolation'
+    #     "power_output_model": "power_coefficient_curve",  # 'power_curve'
+    #     # (default) or 'power_coefficient_curve'
+    #     "density_correction": True,  # False (default) or True
+    #     "obstacle_height": 0,  # default: 0
+    #     "hellman_exp": None,
+    # }  # None (default) or None
+    # # initialize ModelChain with own specifications and use run_model method
+    # # to calculate power output
+    # mc_windPowerPlant = ModelChain(windPowerPlant, **modelchain_data).run_model(my_weather)
+    # # write power output time series to WindTurbine object
+    # windPowerPlant.power_output = mc_windPowerPlant.power_output
+    
+    # ************************************************************************
+    
+    wind_plant_fix = windPowerPlant.power_output/ 1000  # W --> kW
+    wind_plant_fix.name = item_name
 
-#     # my_weather = getGLWeatherData(my_weather)
+    wind_plant_fix.to_csv(f'in/{config.location_name}/{item_name}.csv', index=False, header=item_name)
 
-#     wind_plant = plants.WindPowerPlant(model=models.SimpleWindTurbine,
-#                                        **config.windPowerPlant)
-
-#     wind_plant_fix = wind_plant.feedin(weather=my_weather, number=1) / 1000  # W --> kW
-#     wind_plant_fix.name = item_name
-
-#     wind_plant_fix.to_csv(f'in/{item_name}.csv', index=False, header=item_name)
-
-#     importFixedFlow(run_name, f'in/{item_name}.csv', 'renewables', item_name, conversion=1 / config.windPlantCapacity)
+    importFixedFlow(run_name, time, f'in/{config.location_name}/{item_name}.csv', 
+                    'renewables', item_name, conversion=1 / config.windPlantCapacity)
+        
 
 
-def createSolarCollectorFixedFlow(item_name, my_weather, run_name):
+def createSolarCollectorFixedFlow(item_name, my_weather, run_name, time):
     logging.info(f'Creating fixed flow for solar collector: {item_name}')
 
     df = my_weather.copy()
@@ -424,7 +616,8 @@ def createSolarCollectorFixedFlow(item_name, my_weather, run_name):
     # get date as index
     df['Date'] = df.index
 
-    # localize data for irradiance purposes, the resulting df does not have daylight savings time rows (spring and fall)
+    # localize data for irradiance purposes, the resulting df does not have 
+    # daylight savings time rows (spring and fall)
     df.index = df.index.tz_localize(tz='Europe/Berlin', ambiguous='NaT', nonexistent='NaT')
     df = df[pd.notnull(df.index)]
 
@@ -456,13 +649,13 @@ def createSolarCollectorFixedFlow(item_name, my_weather, run_name):
     new = new.fillna(0)
 
     # export as csv
-    new.to_csv(f'in/{item_name}.csv', index=False)
+    new.to_csv(f'in/{config.location_name}/{item_name}.csv', index=False)
 
-    importFixedFlow(run_name, f'in/{item_name}.csv', 'renewables', item_name,
-                    conversion=(1 / 1000))
+    importFixedFlow(run_name, time, f'in/{config.location_name}/{item_name}.csv', \
+                    'renewables', item_name, conversion=(1 / 1000))
 
 
-def createHeatpumpAirFixedCOP(item_name, temp_high, my_weather, run_name):
+def createHeatpumpAirFixedCOP(item_name, temp_high, my_weather, run_name, time):
     logging.info(f'Creating fixed COP for heat pump air water: {item_name}')
 
     # Precalculation of COPs
@@ -481,13 +674,14 @@ def createHeatpumpAirFixedCOP(item_name, temp_high, my_weather, run_name):
     new[item_name] = cops
 
     # export as csv
-    new.to_csv(f'in/{item_name}_cops.csv', index=False)
+    new.to_csv(f'in/{config.location_name}/{item_name}_cops.csv', index=False)
 
-    importFixedCOP(run_name, f'in/{item_name}_cops.csv', 'transformers_out', item_name)
+    importFixedCOP(run_name, time, f'in/{config.location_name}/{item_name}_cops.csv', \
+                   'transformers_out', item_name)
 
 
 def importNodesFromExcel(filename):
-    """Read node data from Excel sheet
+    """Read node data from scenario file
 
     Parameters
     ----------
@@ -503,7 +697,8 @@ def importNodesFromExcel(filename):
     # does Excel file exist?
     if not filename or not os.path.isfile(filename):
         raise FileNotFoundError("Excel data file {} not found.".format(filename))
-
+    
+    logging.info("Import of Excel data")
     # read excel file
     xls = pd.ExcelFile(filename)
 
@@ -534,7 +729,7 @@ def importNodesFromExcel(filename):
     if config.granularity == 'H':
         nodes_data['timeseries']['hour'] = nodes_data['timeseries'].index.hour
 
-    logging.info("Data from Excel file {} imported.".format(filename))
+    logging.info("Data from scenario file {} imported.".format(filename))
 
     sheets = list(nodes_data.keys())
     sheets.remove('timeseries')
@@ -556,13 +751,23 @@ def importNodesFromExcel(filename):
 
         nodes_data[i] = nodes_data[i].drop(labels=lst, axis=0)
 
-        un = [x for x in nodes_data[i].columns if str(x).__contains__('Unnamed')]
+        un = [x for x in nodes_data[i].columns if str(x).__contains__('Unnamed') or \
+                                                  str(x).__contains__('warnings') or \
+                                                  str(x).__contains__('Dropdown list')]
         for u in un:
             del nodes_data[i][u]
 
-    # sets newly read elements as new investments
+    # sets newly read investment options as new=True, sets read initially existing plants as new=False
     for i in config.ci: 
-        nodes_data[i]['new'] = True
+       
+        for num, x in nodes_data[i].iterrows():
+            if x['initial_existance'] == 1:
+                x['new'] = False
+            else:
+                x['new'] = True
+
+            nodes_data[i] = nodes_data[i].drop(labels=num)
+            nodes_data[i] = nodes_data[i].append(x)
 
     return nodes_data
 
@@ -586,7 +791,9 @@ def validateExcelInput(dict):
         for item in items:
             if item[-4:].isnumeric():
                 raise ValueError(
-                    f'Labels cannot end with four integers as this will lead to confusion once the year of investment is added to the year. Please change {item} in sheet {i} and start again.')
+                    f'Labels cannot end with four integers as this will lead to confusion \
+                    once the year of investment is added to the year. \
+                    Please change {item} in sheet {i} and start again.')
     logging.info('Labels from excel input are ok. Validation continues...')
 
     buses = list(dict['buses']['label'])
@@ -618,18 +825,22 @@ def validateExcelInput(dict):
 
                 else:
                     raise ValueError(
-                        f'Please check sheet {i}. You have listed a bus in column {label} that is not included or set active in the bus list.')
+                        f'Please check sheet {i}. You have listed a bus in column \
+                        {label} that is not included or set active in the bus list.')
             except KeyError:
                 continue
-    logging.info('All buses used as input or output have also been listed as a bus. Validation continues...')
+    logging.info('All buses used as input or output have also been listed as a bus. \
+                 Validation continues...')
 
     # check that demand buses have excess
     demands = list(dict['demand']['from'])
     bus_with_excess = list(dict['buses'].loc[dict['buses']['excess'] == 1]['label'])
     if not set(demands).issubset(bus_with_excess):
         raise ValueError(
-            f'Please make sure that the buses listed as input for demands {demands} have excess capacity enabled in the buses excel sheet.')
-    logging.info('Checked that demand inputs have excess capability enabled. Validation continues...')
+            f'Please make sure that the buses listed as input for demands {demands} \
+            have excess capacity enabled in the buses excel sheet.')
+    logging.info('Checked that demand inputs have excess capability enabled. \
+                 Validation continues...')
 
     # check that fixed flows exist for renewables and demand
     sheets = ['demand', 'renewables']
@@ -660,14 +871,13 @@ def validateExcelInput(dict):
                         continue
                     if 1 in [c in item for c in issue_chars]:
                         raise ValueError(
-                            f'Please check excel sheet {sheet}, column {col} and rename --{item}-- in Excel and database as the following characters cause errors: {issue_chars}')
+                            f'Please check excel sheet {sheet}, column {col} and rename --{item}-- in Excel \
+                            and database as the following characters cause errors: {issue_chars}')
             except KeyError:
                 continue
     logging.info('Checked for characters that cause issues in LCA dataset names. Validation continues...')
 
-    # ToDo: actually create this funciton
-
-    logging.info('Successfully checked the excel input table for the most common errors.')
+    logging.info('Successfully checked the scenario input table for the most common errors.')
 
 
 def readWeightingNormalization(filename):
@@ -721,11 +931,10 @@ def getEcoinventDataOpenLCA(ps):
     setup.impact_method = client.find(olca.ImpactMethod, config.LCA_impact_method)
 
     setup.product_system = client.find(olca.ProductSystem, ps)
-    setup.amount = 1.0
+    setup.amount = 1.0 #check functionality
 
     # calculate the results and export it to an Excel file
     result = client.calculate(setup)
-    # ToDo: pass result directly instead of saving as excel and reimporting, low priority
     client.excel_export(result, Path(f'LCA/{ps}.xlsx'))
     client.dispose(result)
     logging.debug(f'Completed update of {ps}')
@@ -745,14 +954,13 @@ def addLCAData(tech, weightEnv, normalizationEnv):
     :return: nodes dict with LCA data (normalized and weighted for multi-objectives)
     '''
 
-    ks = ['var_env1', 'var_env2', 'inv1', 'inv2'] #to do: delete inv2 
-
-    sheets = config.ci
+    sheets = config.ci.copy()
     sheets.append('commodity_sources')
+    sheets.append('buses')
     units = None
 
     adapted = tech.copy()
-    ks = ['var_env1', 'var_env2', 'inv1', 'inv2'] #to do: inv2 löschen
+    ks = ['var_env1', 'var_env2', 'inv1', 'inv2', 'excess_env'] 
 
     # iterate through sheets from read-in Excel
     for i in sheets:
@@ -777,7 +985,8 @@ def addLCAData(tech, weightEnv, normalizationEnv):
 
                             if not os.path.isfile(f'LCA/{nm}.xlsx'):
                                 raise ValueError(
-                                    'Please make sure that you have a file called empty.xlsx in your LCA folder that has a value of 0 for all environmental factors.')
+                                    'Please make sure that you have a file called empty.xlsx in your LCA folder'
+                                    'that has a value of 0 for all environmental factors.')
 
                         elif not os.path.isfile(f'LCA/{nm}.xlsx'):
                             get_file = True
@@ -817,7 +1026,7 @@ def addLCAData(tech, weightEnv, normalizationEnv):
                         # divides investment impacts by lifetime
                         if k in ['inv1', 'inv2']:
                             df_new = df_new.div(row['lifetime'])
-
+                        
                         result = pd.DataFrame()
 
                         # apply weighting and normalization
@@ -829,7 +1038,7 @@ def addLCAData(tech, weightEnv, normalizationEnv):
                             result[indicator] = temp_result
 
                         data[f'{k}_LCA'] = result.sum(axis=0)
-                #
+                
                 except KeyError:
                     x = 'sth'
 
@@ -854,9 +1063,7 @@ def calcInvestAnnuity(tech):
 
     adapted = tech.copy()
 
-    ci = ['transformers_in','transformers_out', 'renewables', 'storages']
-    # ci_cs = config.ci
-    
+    ci = config.ci.copy()
     
     for i in ci:
         new_nodes_data = pd.DataFrame(columns=tech[i].columns)
@@ -868,12 +1075,16 @@ def calcInvestAnnuity(tech):
 
             # calculate annuity and use for ep_costs calculation
             try:
-                if np.isnan(row['invest']):
+                if np.isnan(row['invest']):     
+                
                     raise ValueError(f'No investment value for {name} provided.')
-
-                ep_annuity = row['om'] + economics.annuity(capex=row['invest'],
-                                                           n=row['lifetime'],
-                                                           wacc=config.InvestWacc)
+                
+                if config.InvestWacc > 0:
+                    ep_annuity = row['om'] + economics.annuity(capex=row['invest'],
+                                                               n=row['lifetime'],
+                                                               wacc=config.InvestWacc)
+                else:
+                    ep_annuity = row['invest'] / row['lifetime']
                 
                 row['annuity'] = ep_annuity
 
@@ -890,8 +1101,8 @@ def calcInvestAnnuity(tech):
 
 def determineEmissionFactors(tech):
     '''
-    Determines the emission factors based on scenario.xlsx and the LCA data for technologies.
-    :param tech: scenario.xlsx extended with LCA data
+    Determines the emission factors based on scenario file and the LCA data for technologies.
+    :param tech: scenario file data extended with LCA data
     :return: tech, includes emission factors
     '''
 
@@ -936,7 +1147,7 @@ def determineEmissionFactors(tech):
                                 row['label'] + f': Emission factor for {k}: ' + str(row[f'{k}_EmissionFactor']))
                         else:
                             logging.debug(row[
-                                              'label'] + f': No emission factor for {k}. Investment emission factors not yet working')
+                                              'label'] + f': No emission factor (FF) for {k}. Investment EFs not yet working')
                     except:
                         logging.debug(row['label'] + f': No emission factor for {k}')
 
@@ -964,8 +1175,9 @@ def getCostDict(tech):
     :return: {'invest': invest_dict, 'variable': variable_costs_dict}
     '''
 
-    ci_cs = config.ci
+    ci_cs = config.ci.copy()
     ci_cs.append('commodity_sources') 
+    ci_cs.append('buses')
 
     inv_costs = {}
     var_costs = {}
@@ -983,6 +1195,9 @@ def getCostDict(tech):
 
             if i in ['commodity_sources', 'renewables']:
                 var_costs[(row['label'], row['to'])] = row['variable costs']
+            
+            if i in ['buses']:
+                var_costs[(row['label'], row['label'] + '_excess')] = row['excess_costs']
             
             if i == 'transformers_in':
                 # outputs
@@ -1062,7 +1277,9 @@ def getEnvDict(tech):
     :return: {'invest': invest_env, 'variable':variable_env_impacts}
     '''
 
-    ci_cs = config.ci
+    ci_cs = config.ci.copy()
+    ci_cs.append('commodity_sources')
+    ci_cs.append('buses')
 
     inv_env = {}
     var_env = {}
@@ -1070,8 +1287,7 @@ def getEnvDict(tech):
     for i in ci_cs:
 
         for idx, row in tech[i].iterrows():
-            # row = tech[i].iloc[x].copy()
-
+            
             try:
                 inv_env[row['label']] = row['inv1_LCA']
             except:
@@ -1085,6 +1301,9 @@ def getEnvDict(tech):
 
             if i in ['commodity_sources', 'renewables']:
                 var_env[(row['label'], row['to'])] = row['var_env1_LCA']
+                
+            if i in ['buses']:
+                var_env[(row['label'], row['label'] + '_excess')] = row['excess_env_LCA']
                 
             if i == 'transformers_in':
                 # no input environmental impacts as applied in previous buses
@@ -1127,6 +1346,7 @@ def saveFactorsForResultCalculation(tech, units, run_name, time):
 
     # get cost dict for investments and variable costs
     cost_dic = getCostDict(tech)
+   
     costs = {}
     costs['invest'] = pd.Series(data=cost_dic['invest'], name="Costs")
     costs['variable'] = pd.Series(data=cost_dic['variable'], name="Costs")
@@ -1140,11 +1360,10 @@ def saveFactorsForResultCalculation(tech, units, run_name, time):
     factors = env_dic.copy()
 
     for key in factors.keys():
-        factors[key] = factors[key].append(costs[key], ignore_index=False).fillna(0)
+        factors[key] = pd.concat([factors[key], costs[key].to_frame().T]).fillna(0)
 
     factors['invest'].loc['emission_factor'] = 0
-    factors['variable'] = factors['variable'].append(ef_var, ignore_index=False).fillna(0)
-    
+    factors['variable'] = pd.concat([factors['variable'], ef_var.to_frame().T]).fillna(0)
 
     writer = pd.ExcelWriter(f'{run_name}\\files\\factors_{time}.xlsx', engine='xlsxwriter')
 
@@ -1167,8 +1386,9 @@ def calculateClimateNeutralEmissions(result):
 
 def calculateEmissionConstraint2(tech, emission_goal_year):
     '''
-    Takes information from scenario.xlsx sheet demand to compute the maximum value of emissions = emission constraint
-    :param tech: scenario.xlsx
+    Takes information from sheet demand of scenario file to compute the maximum 
+    value of emissions = emission constraint
+    :param tech: as read in from scenario file
     :return: emission_constraint (float)
     '''
 
@@ -1188,7 +1408,8 @@ def calculateEmissionConstraint2(tech, emission_goal_year):
             emission_limit = None
 
     logging.info(
-        f'The current year being calculated is {emission_goal_year - config.ec_horizon}. The emission target used is for year {emission_goal_year}: {emission_limit} kg Co2-Eq / a')
+        f'The current year being calculated is {emission_goal_year - config.ec_horizon}. \
+        The emission target used is for year {emission_goal_year}: {emission_limit} kg CO2-Eq/a')
 
     return emission_limit
 
@@ -1212,10 +1433,10 @@ def calculateEmissionGoals(tech, calc_years, climate_neutral):
     em_limits_years['emission goal year'] = em_limits_years + config.ec_horizon
     em_limits_years['climate neutrality'] = climate_neutral
 
-    # calculate emission constraints for years that have values (=intermediary goals) in scenario.xlsx, sheet demand
+    # calculate emission constraints for years that have values (=intermediary goals) in scenario file, sheet demand
     for year in calc_years:
-        em_limits_years.at[year, 'political emission goal'] = calculateEmissionConstraint2(tech,
-                                                                                           year + config.ec_horizon)
+        em_limits_years.at[year, 'political emission goal'] = calculateEmissionConstraint2(
+            tech, year + config.ec_horizon)
 
     # get emission limits for those years without intermediary goals
     if em_limits_years['political emission goal'].to_list()[-1] == None:
@@ -1235,7 +1456,8 @@ def calculateEmissionGoals(tech, calc_years, climate_neutral):
             # determine emission goal year for the calculation year
             goal_year = em_limits_years.loc[year, 'emission goal year']
 
-            # if the emission goal year is between the last intermediary goal year and the climate neutrality goal year, determine the goal based on a linear tightening of limits each year
+            # if the emission goal year is between the last intermediary goal year 
+            # and the climate neutrality goal year, determine the goal based on a linear tightening of limits each year
             if goal_year < config.def_cn_year_climate_neutrality:
                 
                 b = (em_cny - (em_sy * sy / cny)) / (1 - cny / sy)
@@ -1294,7 +1516,9 @@ def determineGoalForObj(objective):
 
 def determineCfactorForSolver(objective):
     '''
-    corrects value for solver, only if normalisation is not per person
+    corrects value for solver, since errors occur with very small variables 
+    for some impact indicators
+    used only if normalisation is not per person
     :param objective: objective for optimization
     :return: c_weight
     '''
@@ -1306,10 +1530,8 @@ def determineCfactorForSolver(objective):
 
     logging.info('Determining correction factor for solver')
     c_weight = 1
-    if config.normalisation_per_person == True:
-        c_weight = 1
-
-    elif objective in {'human health - carcinogenic effects',
+    
+    if objective in {'human health - carcinogenic effects',
                        'human health - non-carcinogenic effects',
                        'human health - ozone layer depletion',
                        'human health - respiratory effects, inorganics'}:
@@ -1317,8 +1539,12 @@ def determineCfactorForSolver(objective):
     elif objective == 'resources - minerals and metals':
         c_weight = 1e3
     elif objective in {'JRCII', 'EnvCosts', 'Equilibrium'}:
-        c_weight = 1e15
-    elif objective == 'climate change - climate change total':
+        if config.normalisation_per_person == True:
+            c_weight = 1
+        else:
+            c_weight = 1e17
+    elif objective in {'climate change - climate change biogenic', 
+                       'climate change - climate change land use and land use change'}:
         c_weight = 100
 
     logging.info(f'Correction factor for solver: {c_weight}')
@@ -1334,19 +1560,19 @@ def adaptEnvToObjective(tech, objective, goal_env, c_weight):
     :param normalization: normalization determined for objective
     :param goal_env: environmental goal
     :param c_weight: correction factor for solver if LCA values are very small
-    :return: nodes dict with environmental data as one value
+    :return: nodes dict with environmental data as one value for multicriteria objectives
     '''
     
-    # List of possible investment classes
-    sheets = config.ci
+    sheets = config.ci.copy()
     sheets.append('commodity_sources')
+    sheets.append('buses')
 
     # copy so that original df stays same
     adapted = tech.copy()
     # relevant keys for environmental data
-    ks = ['var_env1', 'var_env2', 'inv1', 'inv2']
+    ks = ['var_env1', 'var_env2', 'inv1', 'inv2', 'excess_env']
 
-    # iterate through sheets of possible investment classes in tech (in read from excel)
+    # iterate through sheets of possible investment classes in tech (in read from xlsx file)
     for i in sheets:
 
         new_nodes_data = pd.DataFrame(columns=tech[i].columns)
@@ -1354,10 +1580,12 @@ def adaptEnvToObjective(tech, objective, goal_env, c_weight):
             adapted[i] = tech[i]
 
         else:
-            # iterate through rows of tech retrieved from excel sheet
+            # iterate through rows of tech retrieved from scenario file
             for x in range(len(tech[i])):
                 row = tech[i].iloc[x].copy()
-                logging.info('Adjusting environmental impacts of ' + row['label'] + ' for weight and normalisation')
+                logging.info('Adjusting environmental impacts of ' + row[
+                             'label'] + ' for weight and normalisation'
+                            )
 
                 
                 for k in ks:
@@ -1376,13 +1604,15 @@ def adaptEnvToObjective(tech, objective, goal_env, c_weight):
                             row[k_n] = new * goal_env * c_weight
 
                             logging.info(row['label'] + ': Environmental result including goal_env (' + str(
-                                goal_env) + ') and c_factor (' + str(c_weight) + ') for ' + k + ': ' + str(row[k_n]))
+                                        goal_env) + ') and c_factor (' + str(
+                                        c_weight) + ') for ' + k + ': ' + str(row[k_n])
+                                        )
 
                     except KeyError:
                         x = 'sth'
 
-                # no investments required for commodity sources
-                if i == 'commodity_sources':
+                # no investments required for commodity sources or excess (=buses)
+                if i in ['commodity_sources', 'buses']:
                     new_nodes_data = new_nodes_data.append(row)
 
                 # adapt investments, add ep_env if two investments required
@@ -1420,8 +1650,6 @@ def adaptEnvToCNnoInvestment(tech_obj):
 
         for idx, val in tech_obj[i].iterrows():
             nm = val['label']
-
-            # for inv in ['ep env']:
 
             try:
                 if val['ep env'] > 0:
@@ -1492,7 +1720,8 @@ def adaptCostsToObjective(tech_obj, objective, goal_cost, c_weight):
     #   copy so that original df stays same
     adapted = tech_obj.copy()
 
-    ci = ['transformers_in', 'transformers_out', 'renewables', 'storages', 'commodity_sources'] 
+    ci_cs = config.ci.copy()
+    ci_cs.append('commodity_sources')
     
 
     if config.normalisation_per_person == True and objective in ['EnvCosts', 'Equilibrium']:
@@ -1507,7 +1736,7 @@ def adaptCostsToObjective(tech_obj, objective, goal_cost, c_weight):
             normalization_cost = 1
 
     # iterate trough transformers, renewables and storages
-    for i in ci:
+    for i in ci_cs:
 
         new_nodes_data = pd.DataFrame(columns=tech_obj[i].columns)
 
@@ -1523,14 +1752,13 @@ def adaptCostsToObjective(tech_obj, objective, goal_cost, c_weight):
             row = tech_obj[i].iloc[x].copy()
             name = row['label']
 
-            # 
             try:
                 
                 if np.isnan(row['annuity']): 
                     raise ValueError(f'No investment value for {name} provided.')
 
                 row['ep costs'] = row['annuity'] 
-
+                               
             except:
                 logging.debug('No investment adaption necessary')
 
@@ -1560,14 +1788,15 @@ def adaptTechObjToYear(pi, year):
     #   copy so that original df stays same
     adapted = pi.copy()
 
-    ci = ['transformers_in', 'renewables', 'storages', 'transformers_out']
+    ci = config.ci.copy()
 
     # iterate through transformers, renewables and storages
     for i in ci:
 
         new_nodes_data = pd.DataFrame(columns=pi[i].columns)
 
-        # iterate through list of possible investments e.g. for transformers, and change name to name_year and add end of life date
+        # iterate through list of possible investments e.g. for transformers, 
+        # and change name to name_year and add end of life date
         for x in range(len(pi[i])):
             # copy row to ensure original df does not get changed
             row = pi[i].iloc[x].copy()
@@ -1614,11 +1843,12 @@ def adaptTimeseriesToYear(tech_obj, year, dtindex):
 
 
 def createOemofNodes(year, nd=None, buses=None):
+   
     '''
     Create nodes (oemof objects) from node dict
 
     :param year: year used in calculation
-    :param nd: dict of nodes as imported from excel
+    :param nd: dict of nodes as imported from scenario xlsx file
     :param buses: existing buses, if applicable
     :return: buses dictionary {label, oemof object} + list of created node objects
     '''
@@ -1649,6 +1879,7 @@ def createOemofNodes(year, nd=None, buses=None):
                             label=x["label"] + "_excess",
                             inputs={
                                 busd[x["label"]]: solph.Flow(
+                                    variable_costs=x["excess_costs"] + x["excess_env_LCA"]
                                 )
                             },
                         )
@@ -1659,6 +1890,7 @@ def createOemofNodes(year, nd=None, buses=None):
                             label=x["label"] + "_shortage",
                             outputs={
                                 busd[x["label"]]: solph.Flow(
+                                    variable_costs=x["shortage costs"]
                                 )
                             },
                         )
@@ -1667,12 +1899,17 @@ def createOemofNodes(year, nd=None, buses=None):
 
         # Create Source objects from table 'commodity sources'
         for i, x in nd["commodity_sources"].iterrows():
-            if x["active"]:
+           
+            # determine if the element can be used or technology is not yet available
+            if x["active"] and year - x['year_of_availability'] <= year and year + x[
+                'end_of_availability']:   
                 nodes.append(
                     solph.Source(
                         label=x["label"],
                         outputs={
                             busd[x["to"]]: solph.Flow(
+                                nominal_value=x['nominal_value'],
+                                summed_max=x["max_availability"],
                                 variable_costs=x["variable costs"] + x["var_env1_LCA"],
                                 emission_factor=x["var_env1_EmissionFactor"]
                             )
@@ -1683,42 +1920,47 @@ def createOemofNodes(year, nd=None, buses=None):
 
         # Create Sink objects with fixed time series from 'demand' table
         for i, x in nd["demand"].iterrows():
-            # set static inflow values
-            inflow_args = {"nominal_value": x["nominal value"]}
-
-            # get time series for node and parameter
-            for col in nd[f"timeseries_{year}"].columns.values:
-                if col.split(".")[0] == x["label"]:
-                    inflow_args[col.split(".")[1]] = nd[f"timeseries_{year}"][col]
-
-            # create
-            nodes.append(
-                solph.Sink(
-                    label=x["label"],
-                    inputs={busd[x["from"]]: solph.Flow(**inflow_args)},
+            if year - x['year_start'] <= year and year + x['year_end'] > year:
+                # set static inflow values
+                inflow_args = {"nominal_value": x["nominal value"]}
+    
+                # get time series for node and parameter
+                for col in nd[f"timeseries_{year}"].columns.values:
+                    if col.split(".")[0] == x["label"]:
+                        inflow_args[col.split(".")[1]] = nd[f"timeseries_{year}"][col]
+          
+                # create
+                nodes.append(
+                    solph.Sink(
+                        label=x["label"],
+                        inputs={busd[x["from"]]: solph.Flow(**inflow_args)},
+                    )
                 )
-            )
-            logging.debug(x['label'] + ' (demand) created')
+                logging.debug(x['label'] + ' (demand) created')
 
     # Create Source objects with fixed time series from 'renewables' table
     for i, x in nd["renewables"].iterrows():
-        use = True if x['eol'] > year else False
+        # determine if the element can be used or if end of life or availability has been exceeded or technology is not yet available
+        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+            'end_of_availability'] > year else False
         name = x['label']
 
         if use == True:
 
             # if new investment, adds investment (investment and variable costs and impacts) parameters
-            if x['new'] == True:
+            if x['new'] == True :
                 outflow_args = {
                     'variable_costs': x["variable costs"] + x["var_env1_LCA"],
                     'emission_factor': x["var_env1_EmissionFactor"],
                     'investment': solph.Investment(
-                        ep_costs = x['ep costs'] + x['ep env'])
+                        ep_costs = x['ep costs'] + x['ep env'],
+                        area = x['area'],
+                        maximum = x["max_capacity_invest"])
                     }
 
             # if existing renewable, take fixed flow as determined by previous calculation
-            if x['new'] == False:
-                outflow_args = {'nominal_value': x['invest_decision'],
+            if x['new'] == False :
+                outflow_args = {'nominal_value': x['initially_installed_capacity'],
                                 'variable_costs': x["variable costs"] + x["var_env1_LCA"], 
                                 'emission_factor': x["var_env1_EmissionFactor"]}
 
@@ -1739,44 +1981,46 @@ def createOemofNodes(year, nd=None, buses=None):
     # Create Transformer objects from 'transformers_in' table where investment refers to input capacity
     for i, x in nd["transformers_in"].iterrows():
 
-        # determine if the element can still be used or if end of life has been exceeded
-        use = True if x['eol'] > year else False
+        # determine if the element can still be used or if end of life or availability 
+        # has been exceeded or technology is not yet available
+        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+            'end_of_availability'] > year else False
         name = x['label']
 
         # set static inflow values
         if use == True:
 
-            cf = x["conversion_factor1"]
-            
             # if existing transformer_in, set fixed max and nominal value
             if x['new'] == False:
 
-                input_args = {busd[x["from1"]]: solph.Flow(
-                                                            max=x['fixed_flow_max'], 
-                                                            nominal_value=1,
-                                                            variable_costs=x["var_from1_costs"], )}
+                input_args = {busd[x["from1"]]: solph.Flow(max=x['initially_installed_capacity'],
+                                                           nominal_value=1,
+                                                           variable_costs=x["var_from1_costs"], 
+                                                           )
+                              }
                 output_args = {busd[x["to1"]]: solph.Flow(emission_factor=x["var_env1_EmissionFactor"], 
                                                           variable_costs=x['var_to1_costs'] + x['var_env1_LCA'],
                                                           )
                                }
-                ## conversion_facts = {busd[x["to1"]]: x["conversion_factor1"]}
-                conversion_facts = {busd[x["to1"]]: cf}
+                conversion_facts = {busd[x["to1"]]: x["conversion_factor_t1"],
+                                    busd[x["from1"]]: x["conversion_factor_f1"]}
 
                 # add second output if it exists
                 try:
                     output_args[busd[x["to2"]]] = solph.Flow(emission_factor=x["var_env2_EmissionFactor"], 
                                                              variable_costs=x['var_env2_LCA'],
                                                              )
-                    conversion_facts[busd[x["to2"]]] = x["conversion_factor2"]
+                    conversion_facts[busd[x["to2"]]] = x["conversion_factor_t2"]
                 except:
                     logging.info(x['label'] + ': No to2; existing investment')
 
 
             # if new investment, set investment parameters on input
-            elif x['new'] == True:
+            elif x['new'] == True :
                 input_args = {busd[x["from1"]]: solph.Flow(variable_costs=x["var_from1_costs"],
                                                           investment=solph.Investment(
-                                                                ep_costs=x['ep costs'] + x['ep env']
+                                                                ep_costs=x['ep costs'] + x['ep env'],
+                                                                maximum = x["max_capacity_invest"]
                                                                 )
                                                            )}
 
@@ -1785,7 +2029,8 @@ def createOemofNodes(year, nd=None, buses=None):
                     emission_factor=x["var_env1_EmissionFactor"],
                                     )}
 
-                conversion_facts = {busd[x["to1"]]: cf} 
+                conversion_facts = {busd[x["to1"]]: x["conversion_factor_t1"],
+                                    busd[x["from1"]]: x["conversion_factor_f1"]}
 
                 # add second output if it exists
                 try:
@@ -1793,7 +2038,7 @@ def createOemofNodes(year, nd=None, buses=None):
                         variable_costs = x['var_env2_LCA'],
                         emission_factor=x["var_env2_EmissionFactor"],
                                                             )
-                    conversion_facts[busd[x["to2"]]] = x["conversion_factor2"]
+                    conversion_facts[busd[x["to2"]]] = x["conversion_factor_t2"]
                 except:
                     logging.info(x['label'] + ': No to2; new investment')
 
@@ -1812,8 +2057,9 @@ def createOemofNodes(year, nd=None, buses=None):
  # Create Transformer objects form 'transformers_out' table where investment refers to output capacity
     for i, x in nd["transformers_out"].iterrows():
 
-        # determine if the element can still be used or if end of life has been exceeded
-        use = True if x['eol'] > year else False
+        # determine if the element can be used or if end of life or availability has been exceeded or technology is not yet available
+        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+            'end_of_availability'] > year else False
         name = x['label']
 
         # set static inflow values
@@ -1826,43 +2072,45 @@ def createOemofNodes(year, nd=None, buses=None):
                 except KeyError:
                     logging.debug(
                         f'No fixed flow given for fixed COP of {name}, using constant given conversion factor: ' + str(
-                            x["conversion_factor1"]))
-                    cf = x["conversion_factor1"]
+                            x["conversion_factor_t1"]))
+                    cf = x["conversion_factor_t1"]
             else:
-                cf = x["conversion_factor1"]
+                cf = x["conversion_factor_t1"]
 
             # if existing transformer, set fixed max and nominal value
             if x['new'] == False:
 
-                input_args = {busd[x["from1"]]: solph.Flow(
-                                                            variable_costs=x["var_from1_costs"], )}
+                input_args = {busd[x["from1"]]: solph.Flow(variable_costs=x["var_from1_costs"])}
                 output_args = {busd[x["to1"]]: solph.Flow(
-                                                            max=x['fixed_flow_max'], 
-                                                            nominal_value=1, 
+                                                          max=x['initially_installed_capacity'],
+                                                          nominal_value=1, 
                                                           emission_factor=x["var_env1_EmissionFactor"],
                                                           variable_costs=x['var_to1_costs'] + x['var_env1_LCA'], 
                                                           )}
                 conversion_facts = {busd[x["to1"]]: cf,
-                                    busd[x["from1"]]: 1}
+                                    busd[x["from1"]]: x["conversion_factor_f1"]}
 
                 # add second input if it exists
                 try:
                     input_args[busd[x["from2"]]] = solph.Flow(variable_costs=x["var_from2_costs"])
-                    conversion_facts[busd[x["from2"]]] = (cf - 1) # applicable for all kind of transformers_out?  
+                    conversion_facts[busd[x["from2"]]] = x["conversion_factor_f2"]  
+                   
                 except:
                     logging.info(x['label'] + ': No from2; existing investment')
 
 
             # if new investment, set investment parameters on output
-            elif x['new'] == True:
+            if x['new'] == True:
                 input_args = {busd[x["from1"]]: solph.Flow(variable_costs=x["var_from1_costs"],
-                                                           )}
+                                                           )
+                              }
 
                 output_args = {busd[x["to1"]]: solph.Flow(
                                                           variable_costs=x['var_to1_costs'] + x['var_env1_LCA'],
                                                           emission_factor=x["var_env1_EmissionFactor"],
                                                           investment = solph.Investment(
-                                                             ep_costs=x['ep costs'] + x['ep env']
+                                                              ep_costs=x['ep costs'] + x['ep env'],
+                                                              maximum = x["max_capacity_invest"]
                                                                                         )
                                                          )}
 
@@ -1875,7 +2123,8 @@ def createOemofNodes(year, nd=None, buses=None):
                     input_args[busd[x["from2"]]] = solph.Flow(
                         variable_costs = x['var_from2_costs'],
                     )
-                    conversion_facts[busd[x["from2"]]] = (cf - 1) # applicable for all kind of transformers_out?
+                    conversion_facts[busd[x["from2"]]] = x["conversion_factor_f2"]
+                    
                 except:
                     logging.info(x['label'] + ': No from2; new investment')
 
@@ -1894,13 +2143,15 @@ def createOemofNodes(year, nd=None, buses=None):
     for i, x in nd["storages"].iterrows():
 
         # determine if the element can still be used or if end of life has been exceeded
-        use = True if x['eol'] > year else False
+        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+            'end_of_availability'] > year else False
         name = x['label']
 
         # set static inflow values
         if use == True:
 
             # if new storage, set investment mode
+            # dertermine if technology is available
             if x['new'] == True:
                 nodes.append(
                     solph.components.GenericStorage(
@@ -1925,7 +2176,8 @@ def createOemofNodes(year, nd=None, buses=None):
                         inflow_conversion_factor=x["efficiency inflow"],
                         outflow_conversion_factor=x["efficiency outflow"],
                         investment=solph.Investment(
-                                                    ep_costs=x['ep costs'] + x['ep env']
+                                                    ep_costs=x['ep costs'] + x['ep env'],
+                                                    maximum = x["max_capacity_invest"]
                                                     )
 
                     ))
@@ -1934,20 +2186,20 @@ def createOemofNodes(year, nd=None, buses=None):
             if x['new'] == False:
                 nodes.append(
                     solph.components.GenericStorage(
-                        label=x["label"],
+                        label=x["label"],                        
                         inputs={
-                            busd[x["bus"]]: solph.Flow(
-                                nominal_value=x["invest decision"] * x['invest_relation_input_capacity'],
+                                busd[x["bus"]]: solph.Flow(
+                                nominal_value=x["initially_installed_capacity"] * x['invest_relation_input_capacity'],
                                                        variable_costs=x["variable input costs"],
                                                        )
                                 },
                         outputs={
-                            busd[x["bus"]]: solph.Flow(
-                                nominal_value=x["invest decision"] * x['invest_relation_output_capacity'], 
+                                busd[x["bus"]]: solph.Flow( 
+                                nominal_value=x["initially_installed_capacity"] * x['invest_relation_output_capacity'], 
                                                        variable_costs=x["variable output costs"], 
                                                        )
                                 },
-                        nominal_storage_capacity=x["invest decision"],
+                        nominal_storage_capacity=x["initially_installed_capacity"],
                         balanced=bool(x['balanced']),
                         loss_rate=x["capacity loss"],
                         initial_storage_level=x["initial capacity"],
@@ -1966,6 +2218,7 @@ def createOemofNodes(year, nd=None, buses=None):
         logging.info(oobj + ":" + n.label)
 
     return busd, nodes
+    
 
 
 def getUsedTechnologies(esys, tech_obj_year):
@@ -1992,11 +2245,13 @@ def getUsedTechnologies(esys, tech_obj_year):
     flows_storage = [x for x in flows_storage if
                      esys.results["main"][x]['sequences']['storage_content'].max() > config.Invest_min_threshhold]
    
-    invests = {
+    invest_dict = {
                'transformers_in': set([x for x in flows_invest_in if isinstance(x[1], solph.Transformer)]),
                'transformers_out': set([x for x in flows_invest_out if isinstance(x[0], solph.Transformer)]),
                'renewables': set([x for x in flows_invest_out if isinstance(x[0], solph.Source)]),
                'storages': set(flows_storage)}
+    
+    invests = {k: v for k, v in invest_dict.items() if len(v) > 0} 
     
     return invests
 
@@ -2038,17 +2293,15 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                     pos = new_nodes.index(i[1].label) 
                     row = tech_obj_year[x].iloc[pos].copy() 
                     
-                    new = new.append(row)
+                    if row['initial_existance'] == 0:
+                        new = new.append(row)
                     
-            elif x != 'transformer_in' and i[0].label in new_nodes: 
-            #if i.label in new_nodes: 
+            elif x != 'transformer_in' and i[0].label in new_nodes:            
                 pos = new_nodes.index(i[0].label) 
                 row = tech_obj_year[x].iloc[pos].copy()
 
-                if row['annuity'] == 0: 
-                    continue
-               
-                new = new.append(row)
+                if row['initial_existance'] == 0: 
+                   new = new.append(row)
 
             new = new.drop_duplicates() 
 
@@ -2059,23 +2312,23 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                     if i[1].label in prev_nodes:
                         pos = prev_nodes.index(i[1].label)
                         row = tech_obj_prev_year[x].iloc[pos].copy()
-                        if row['eol'] > year:
+                        if row['eol'] > year and row['initial_existance'] == 0:
                             old = old.append(row)
 
                 elif x != 'transformer_in' and i[0].label in prev_nodes:
                     pos = prev_nodes.index(i[0].label)
                     row = tech_obj_prev_year[x].iloc[pos].copy()
-                    if row['eol'] > year:
+                    if row['eol'] > year and row['initial_existance'] == 0:
                         old = old.append(row)
 
 
                     if x == 'storages':
                         flow = [x for x in used_tech['storages'] if x[0].label == row['label']]
-                   
-                        
-                        if row["invest decision"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
-                            row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
-                                    "invest decision"]
+                        last_storage_content = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1]                  
+                        # sets initial capacity for the following year depending on the storage content of the last timestep                        
+                        if row["initially_installed_capacity"] > 0 and last_storage_content > 0: 
+                            row["initial capacity"] = last_storage_content / row[
+                                    "initially_installed_capacity"]
                     
                 old = old.drop_duplicates()
 
@@ -2098,8 +2351,9 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
 
                 pot_flows = [x for x in flows if x[1].label == i]
                 flow = [x for x in pot_flows if x[0].label == row['from1']]
-
-                row['fixed_flow_max'] = esys.results['main'][flow[0]]['sequences'].max()['flow'] 
+ 
+                if row['initial_existance'] == 0:
+                    row['initially_installed_capacity'] = esys.results['main'][flow[0]]['sequences'].max()['flow']
                 
                 df2 = df2.append(row)
 
@@ -2117,7 +2371,8 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                 pot_flows = [x for x in flows if x[0].label == i]
                 flow = [x for x in pot_flows if x[1].label == row['to1']] 
 
-                row['fixed_flow_max'] = esys.results['main'][flow[0]]['sequences'].max()['flow']
+                if row['initial_existance'] == 0:
+                    row['initially_installed_capacity'] =  esys.results['main'][flow[0]]['sequences'].max()['flow']
                 
                 df2 = df2.append(row)
 
@@ -2134,16 +2389,16 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                 row = new.iloc[pos].copy()
                 
                 flow = [x for x in used_tech['renewables'] if x[0].label == i]
-                try:
-                    row['invest_decision'] = esys.results['main'][flow[0]]['scalars']['invest'] 
-                except KeyError:
-                    x = 'Do nothing'
                 
-                try:
-                    row['nominal_value'] = esys.results['main'][flow[0]]['sequences'].max()['flow']
-                except KeyError:
-                    x = 'Do nothing'
-
+                if row['initial_existance'] == 0:
+                    try:
+                        row['initially_installed_capacity'] = esys.results['main'][flow[0]]['scalars']['invest'] 
+                    except KeyError:
+                       
+                        logging.debug(f'Error - sth went wrong: No investment for {x}, {i} found, \
+                                      though it is an used technology. See script utils.exportInvestDecisions.')
+                        sys.exit()                        
+             
                 df2 = df2.append(row)
 
         if x == 'storages':
@@ -2159,18 +2414,18 @@ def exportInvestDecisions(esys, tech_obj_year, tech_obj_prev_year, year):
                 flow_ipts = (list(flow[0][0].inputs.items())[0][1].input, list(flow[0][0].inputs.items())[0][1].output)
                 flow_opts = (list(flow[0][0].outputs.data.items())[0][1].input, list(flow[0][0].outputs.data.items())[0][1].output)
 
-                try:
-                    row["invest decision"] = esys.results['main'][flow[0]]['scalars']['invest']
-                    logging.debug(esys.results['main'][flow[0]]['scalars']['invest'])
+                try:                    
+                    row["initially_installed_capacity"] = esys.results['main'][flow[0]]['scalars']['invest']
+                    
                 except KeyError:
                     x = 'Do nothing'
                     
                 row['capacity inflow'] = esys.results['main'][flow_ipts]['sequences'].max()['flow']
                 row['capacity outflow'] = esys.results['main'][flow_opts]['sequences'].max()['flow']
                 
-                if row["invest decision"] > 0 and esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] > 0: 
-                    row["initial capacity"] = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1] / row[
-                            "invest decision"]
+                last_storage_content = esys.results['main'][flow[0]]['sequences']['storage_content'].iloc[-1]
+                if row["initially_installed_capacity"] > 0 and last_storage_content > 0: 
+                    row["initial capacity"] = last_storage_content / row["initially_installed_capacity"]
 
                 df2 = df2.append(row)
 
@@ -2189,7 +2444,8 @@ def getResults(esys, prev_results=None):
 
     :param esys: solved energy system
     :param prev_results: results from previous year, if applicable
-    :return: interim results, dict of flows and matching technology e.g. flow CHPg/el --> CHPg
+    :return: interim results, flows_to_tech: dict of flows and matching technology e.g. flow CHPg/el --> CHPg,
+    :        tech_bus: definition of 'buses' for later consolidation of results
     '''
 
     logging.info('Getting oemof results to create list of investments')
@@ -2208,6 +2464,7 @@ def getResults(esys, prev_results=None):
     variable = {}
     new_invests = {}
     flows_to_tech = {}
+    tech_bus = {}
     new_flows = []
             
     # iterate through esys results
@@ -2218,44 +2475,33 @@ def getResults(esys, prev_results=None):
         else:
             storage_content = False
 
-        if storage_content == False:
+        if storage_content:
+             new_flows.append(esys.results['main'][x]['sequences'].rename(
+                 columns={'storage_content': x[0].label + '/storage_content'}))
+
+             technology = x[0].label
+             
+        else:
             new_flows.append(
                 esys.results['main'][x]['sequences'].rename(columns={'flow': x[0].label + '/' + x[1].label}))
             # calculate sum of variable flows
             flow_sum = esys.results['main'][x]['sequences']['flow'].sum()
-            variable[x[0].label + '/' + x[1].label] = flow_sum
+            if flow_sum > 0:
+                variable[x[0].label + '/' + x[1].label] = flow_sum
             
+            #definition of 'technology' for later consolidation of results
             technology = [item.label for item in x if not isinstance(item, solph.Bus)][0]
-
             flows_to_tech[x[0].label + '/' + x[1].label] = technology
             
-        elif storage_content:
-            new_flows.append(esys.results['main'][x]['sequences'].rename(
-                columns={'storage_content': x[0].label + '/storage_content'}))
+            #definition of 'buses' for later consolidation of results
+            bus = [item.label for item in x if isinstance(item, solph.Bus)][0]
+            tech_bus[x[0].label + '/' + x[1].label] = bus
 
-            technology = x[0].label
-
+       
         if technology in prev_invests.keys():
-            # if technology e.g. PV_year was already used in previous year (=previous investment), copy the invest from previous year to new year
-            # --> technology cannot be sold, is payed off until eol achieved (=no longer added to oemof energy system)
-
-            # if configuration does not allow for sale, use invest value from previous year
-            if config.Invest_sell_if_unused == False:
-                new_invests[technology] = prev_invests[technology]
-
-            # if configuration allows for sale, determine if the technology is still being used before adding it to invests
-            elif config.Invest_sell_if_unused:
-
-                flows_associated_tech = [x for x in variable.keys() if x.__contains__(technology)]
-                var = 0
-
-                for fl in flows_associated_tech:
-                    var += variable[fl]
-
-                # if variable flow sums == 0 --> technology is no longer used, should not be added to investments
-                # if variable flow sums > 0, technology is used and should be payed for in this period
-                if var > 0:
-                    new_invests[technology] = prev_invests[technology]
+        # if technology e.g. PV_year was already used in previous year (=previous investment), 
+        # copy the invest from previous year to new year 
+            new_invests[technology] = prev_invests[technology]
 
         # add new invests
         else:
@@ -2266,7 +2512,7 @@ def getResults(esys, prev_results=None):
                         continue 
                     
                     else:  
-                        new_invests[x[0].label] = inv_value  #ToDo: insert min_invest_threshold comparison
+                        new_invests[x[0].label] = inv_value
                         
                 elif isinstance(x[1], solph.Transformer): 
                     new_invests[x[1].label] = inv_value
@@ -2289,15 +2535,19 @@ def getResults(esys, prev_results=None):
 
                 except AttributeError:
                     logging.debug(str(x) + ': Attribute error for storage component. No inv_value was passed')
+           
+    #delete zero values
+    for key in list(new_invests.keys()):
+        if new_invests[key] < 1E-7:
+            del new_invests[key]
             
-
     df_new_flows = pd.concat(new_flows, axis=1, sort=True)
 
     flows = pd.concat([flows, df_new_flows], axis=0, sort=True).fillna(0)
     
     objective = esys.results['meta']['objective'] 
 
-    return {'invest': new_invests, 'variable': variable, 'flows': flows, 'objective': objective}, flows_to_tech
+    return {'invest': new_invests, 'variable': variable, 'flows': flows, 'objective': objective}, flows_to_tech, tech_bus
 
 
 def multiplyOemofResultsWithFactors(int_res, factors, year):
@@ -2345,11 +2595,14 @@ def multiplyOemofResultsWithFactors(int_res, factors, year):
             normalization_cost = config.normalization_cost_gdp / config.normalization_person_population
         else:
             normalization_cost = config.normalization_cost_gdp
-
-        result.at['EnvCosts'] = result.loc['EnvCosts'] * config.weight_cost_to_env + result.loc[
-            'Costs'] * config.weight_cost_to_env / normalization_cost
-        result.at['Equilibrium'] = result.loc['Equilibrium'] * (1 - config.weight_cost_to_env_equilibrium) + result.loc[
-            'Costs'] * config.weight_cost_to_env_equilibrium / normalization_cost
+        
+        try:
+            result.at['EnvCosts'] = result.loc['EnvCosts'] * (1 - config.weight_cost_to_env) + result.loc[
+                'Costs'] * config.weight_cost_to_env / normalization_cost
+            result.at['Equilibrium'] = result.loc['Equilibrium'] * (1 - config.weight_cost_to_env_equilibrium) + result.loc[
+                'Costs'] * config.weight_cost_to_env_equilibrium / normalization_cost
+        except KeyError:
+            logging.info('Could not calculate result for EnvCosts or Equilibrium.')
         
         result['Sum'] = result.sum(axis=1)
         
@@ -2361,16 +2614,18 @@ def multiplyOemofResultsWithFactors(int_res, factors, year):
     return results
 
 
-def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_objective, tech_result_year, tech, def_cn):
+def consolidateAnnualResults(year, flows_to_tech, tech_bus, result_year, result_total_objective, tech_result_year, tech, def_cn):
+
     '''
     Takes results for year and appends them to previous years results.
 
     :param year: year of optimization
     :param flows_to_tech: dict matching flows to associate technology
+    :param tech_bus: dict matching flows to associated buses (=counterpart of flows_to_tech)
     :param result_year: results for the given year of optimization
     :param result_total_objective: consolidated results for several years for given objective
     :param tech_result_year: oemof result of invests and flows
-    :param tech: data adapted from scenario.xlsx
+    :param tech: data adapted from scenario file
     :return: result for several years for given objective
     '''
 
@@ -2398,19 +2653,24 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
         
         for item in tech_result_year[key]:
             # find the technology associated with investment e.g. CHP for CHP_2021
+                        
             if key == 'invest':
                 if int(item[-4:]) == year:
                     new_row = {'label': item, 'type': key, 'year': year, 'value': tech_result_year[key][item]}
-                     
                     new_row['technology'] = item[:-5]
 
-                    if item[:-5] in list(tech['storages']['label']):
-                        new_row['unit'] = 'kWh'
-                    else:
-                        new_row['unit'] = 'kW' # Todo: FPC in m²! Correction necessary
-                       
-                    new_row['period end'] = year + step_for_aux_years - 1 
-
+                    tech_cat = {}
+                    
+                    for cat in config.ci:
+                        for label in list(tech[cat]['label']):
+                            tech_cat[label] = cat
+                    
+                    c = tech_cat[item[:-5]]
+                                            
+                    new_row['unit'] = tech[c].loc[tech[c][tech[c]['label'] == item[:-5]].index[0], 'unit']                                          
+                    new_row['period end'] = year + step_for_aux_years - 1
+                    
+                   
                 else:
                     continue           
 
@@ -2421,7 +2681,8 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
                 if technology[-4:].isnumeric():
                     technology = technology[:-5]
                 new_row['technology'] = technology
-                new_row['unit'] = 'kWh'
+                bus = tech_bus[item]
+                new_row['unit'] = tech['buses'].loc[tech['buses'][tech['buses']['label'] == bus].index[0], 'unit']
                 new_row['period end'] = year + step_for_aux_years - 1 
 
                 if def_cn == False:
@@ -2430,8 +2691,9 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
     
                     if config.emission_constraint:
                         new_row['emission horizon year'] = year + config.ec_horizon
-
+                            
             tech_results = tech_results.append(new_row, ignore_index=True)
+            
 
     # Get impact results for overview
     # if first year, set up the df for full results
@@ -2443,6 +2705,7 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
 
     else:
         result_overview = result_total_objective['impact']
+        
 
     # add investment to overview
     for ky in result_year.keys():
@@ -2460,7 +2723,7 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
                 new_row['emission horizon year'] = year + config.ec_horizon
         
   
-        res['year'] = year
+        res['year'] = int(year)
         res['name'] = res.index.copy()
         res['type'] = ky 
         res['period end'] = year + step_for_aux_years - 1 
@@ -2504,7 +2767,7 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
         
         res['objective value'] = tech_result_year['objective'] * step_for_aux_years
         result_overview = result_overview.append(res)
-    
+        
     # Environmental impacts and costs are added for investments from previous years.      
     result_overview = result_overview.reset_index(drop=True)
     names = result_overview['name'].tolist() 
@@ -2515,11 +2778,11 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
         
         index = result_overview.index[(result_overview['name'] == name)].tolist()
         for i in index:
-            y = result_overview.loc[i, 'year'] 
+            y = result_overview.loc[i, 'year'] #type: float
             int_year = int(y)
             if year == int_year: #the investment year
                 continue
-                        
+            
             if int_year == int(name[-4:]):
             
                 row = result_overview.iloc[i].copy()
@@ -2530,7 +2793,7 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
                     row['period end'] = year + step_for_aux_years - 1
                     row = row.to_frame().T
                     result_overview = pd.concat([result_overview, row])
-    
+                                           
     result_total_objective['impact'] = result_overview
     
     result_total_objective['tech'] = tech_results
@@ -2540,13 +2803,13 @@ def consolidateAnnualResults(year, flows_to_tech, result_year, result_total_obje
 
 def exportNodesData(run_name, excel_nodes, nm, name):
     '''
-    Auxiliary function to export nodes dict to excel at any given point
+    Auxiliary function to export nodes dict as xlsx file at any given point
     :param excel_nodes: nodes dict
     :param nm: name to save file
     :return: nothing
     '''
 
-    logging.info(f'Exporting Excel file for {nm}')
+    logging.info(f'Exporting xlsx file for {nm}')
     writer = pd.ExcelWriter(f'{run_name}\\files\\{nm}_{name}.xlsx', engine='xlsxwriter')
 
     for key in excel_nodes.keys():
