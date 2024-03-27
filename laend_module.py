@@ -58,7 +58,7 @@ def main(run_name, time):
                 )
         else:
             utils.importFixedFlow(
-                run_name, time, f'in/{config.location_name}/{config.filename_th_demand}', 'demand', 'load_th', col_name='total'
+                run_name, time, f'in/{config.location_name}/{config.filename_th_demand}', 'demand', config.varname_th_high, col_name='total'
                 )
             
     utils.getElectricityDemand(

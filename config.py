@@ -13,8 +13,8 @@ import logging
 #######################################
 
 # Sets start and end year of optimization
-start_year = 2024
-end_year = 2028
+start_year = 2025
+end_year = 2044
 
 calc_start = datetime(start_year, 1, 1, 00, 00)
 calc_end = datetime(end_year, 12, 31, 23, 00)
@@ -155,7 +155,7 @@ building_class = 10
 building_wind_class = 0  # 0=not windy, 1=windy
 filename_th_demand = 'heat_demand_bdew.csv' #file will be generated if update_heat_demand = True
 
-separate_heat_water = True  # if True two load curves for space heat and hot water are generated per type
+separate_heat_water = False  # if True two load curves for space heat and hot water are generated per type
                             # only relevant when update_heat_demand = True
 
 varname_th_low = 'load_th_low' # name used in scenario.xlsx for thermal load for low temperature space heat;
@@ -233,7 +233,7 @@ update_heatpump_a_w_high_cop = True
 varname_a_w_hp_high = 'heat_pump_a_w_high'
 hp_temp_high = 55  # maximum outlet temperature in [°C]
 
-update_heatpump_a_w_low_cop = True
+update_heatpump_a_w_low_cop = False
 varname_a_w_hp_low = 'heat_pump_a_w_low'
 hp_temp_low = 40  # maximum outlet temperature in [°C]
 
