@@ -1901,8 +1901,8 @@ def createOemofNodes(year, nd=None, buses=None):
         for i, x in nd["commodity_sources"].iterrows():
            
             # determine if the element can be used or technology is not yet available
-            if x["active"] and year - x['year_of_availability'] <= year and year + x[
-                'end_of_availability']:   
+            if x["active"] and config.start_year + x['year_of_availability'] <= year and config.start_year + x[
+                'end_of_availability'] > year:   
                 nodes.append(
                     solph.Source(
                         label=x["label"],
@@ -1920,7 +1920,7 @@ def createOemofNodes(year, nd=None, buses=None):
 
         # Create Sink objects with fixed time series from 'demand' table
         for i, x in nd["demand"].iterrows():
-            if year - x['year_start'] <= year and year + x['year_end'] > year:
+            if config.start_year + x['year_start'] <= year and config.start_year + x['year_end'] > year:
                 # set static inflow values
                 inflow_args = {"nominal_value": x["nominal value"]}
     
@@ -1941,7 +1941,7 @@ def createOemofNodes(year, nd=None, buses=None):
     # Create Source objects with fixed time series from 'renewables' table
     for i, x in nd["renewables"].iterrows():
         # determine if the element can be used or if end of life or availability has been exceeded or technology is not yet available
-        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+        use = True if x['eol'] > year and config.start_year + x['year_of_availability'] <= year and config.start_year + x[
             'end_of_availability'] > year else False
         name = x['label']
 
@@ -1983,7 +1983,7 @@ def createOemofNodes(year, nd=None, buses=None):
 
         # determine if the element can still be used or if end of life or availability 
         # has been exceeded or technology is not yet available
-        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+        use = True if x['eol'] > year and config.start_year + x['year_of_availability'] <= year and config.start_year + x[
             'end_of_availability'] > year else False
         name = x['label']
 
@@ -2058,7 +2058,7 @@ def createOemofNodes(year, nd=None, buses=None):
     for i, x in nd["transformers_out"].iterrows():
 
         # determine if the element can be used or if end of life or availability has been exceeded or technology is not yet available
-        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+        use = True if x['eol'] > year and config.start_year + x['year_of_availability'] <= year and config.start_year + x[
             'end_of_availability'] > year else False
         name = x['label']
 
@@ -2143,7 +2143,7 @@ def createOemofNodes(year, nd=None, buses=None):
     for i, x in nd["storages"].iterrows():
 
         # determine if the element can still be used or if end of life has been exceeded
-        use = True if x['eol'] > year and year - x['year_of_availability'] <= year and year + x[
+        use = True if x['eol'] > year and config.start_year + x['year_of_availability'] <= year and config.start_year + x[
             'end_of_availability'] > year else False
         name = x['label']
 
